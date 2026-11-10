@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rasterización scanline: z-buffer y sombreado plano</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #14151c; color: #e8e8ee; }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p { margin: 0 0 14px; color: #a9abb8; font-size: .9rem; }
+  canvas { width: 100%; height: auto; display: block; border: 1px solid #2e303c; background: #1a1a26; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; margin-top: 14px; }
+  label { display: flex; flex-direction: column; font-size: .85rem; gap: 4px; }
+  input[type=range] { width: 100%; }
+  #info { margin-top: 12px; font-size: .8rem; color: #a9abb8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Escena base y scanline</h1>
+  <p>Rasterización de triángulos con z-buffer y sombreado plano, sin WebGL: cada píxel se calcula en JavaScript.</p>
+  <canvas id="c" width="640" height="480"></canvas>
+  <div class="controls">
+    <label>Cámara: giro <input id="camAng" type="range" min="0" max="360" value="35"></label>
+    <label>Cámara: altura <input id="camH" type="range" min="0" max="8" step="0.1" value="3"></label>
+    <label>Cámara: distancia <input id="camD" type="range" min="4" max="14" step="0.1" value="7"></label>
+    <label>Luz: azimut <input id="lAz" type="range" min="0" max="360" value="40"></label>
+    <label>Luz: elevación <input id="lEl" type="range" min="5" max="90" value="55"></label>
+    <label><span><input id="spin" type="checkbox" checked> Girar objetos</span></label>
+  </div>
+  <div id="info"></div>
+</main>
+
+<script>
+const W = 640, H = 480;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const img = ctx.createImageData(W, H);
+const px = img.data;
+const zbuf = new Float32Array(W * H);
+const BG = [26, 26, 38];
+const NEAR = 0.1, FAR = 50;
+
+// ---------- Utilidades de vectores ----------
+const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+const norm = a => { const l = Math.hypot(...a); return [a[0]/l, a[1]/l, a[2]/l]; };
+
+// ---------- Cámara ----------
+function lookAt(eye, target, up = [0, 1, 0]) {
+  const f = norm(sub(target, eye));
+  const r = norm(cross(f, up));
+  const u = cross(r, f);
+  return [
+    [...r, -dot(r, eye)],
+    [...u, -dot(u, eye)],
+    [-f[0], -f[1], -f[2], dot(f, eye)],
+    [0, 0, 0, 1]
+  ];
+}
+function perspective(fovDeg, aspect, n, f) {
+  const t = 1 / Math.tan(fovDeg * Math.PI / 360);
+  return [
+    [t / aspect, 0, 0, 0],
+    [0, t, 0, 0],
+    [0, 0, (f + n) / (n - f), 2 * f * n / (n - f)],
+    [0, 0, -1, 0]
+  ];
+}
+function mulVec(m, v) {
+  const x = v[0], y = v[1], z = v[2];
+  return m.map(r => r[0]*x + r[1]*y + r[2]*z + r[3]);
+}
+
+// ---------- Objetos (devuelven vértices en mundo, triángulos y color) ----------
+function rotY(v, a) {
+  const c = Math.cos(a), s = Math.sin(a);
+  return [v[0]*c + v[2]*s, v[1], -v[0]*s + v[2]*c];
+}
+function cube(center, angle) {
+  const base = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
+  const verts = base.map(v => { const r = rotY(v, angle); return [r[0]+center[0], r[1]+center[1], r[2]+center[2]]; });
+  const quads = [[0,1,2,3],[4,5,6,7],[0,1,5,4],[2,3,7,6],[1,2,6,5],[0,3,7,4]];
+  const tris = [];
+  for (const [a, b, c, d] of quads) tris.push([a, b, c], [a, c, d]);
+  return { verts, tris, color: [230, 80, 60] };
+}
+function pyramid(center, angle) {
+  const base = [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1],[0,1,0]];
+  const verts = base.map(v => { const r = rotY(v, angle); return [r[0]+center[0], r[1]+center[1], r[2]+center[2]]; });
+  const tris = [[0,1,2],[0,2,3],[0,1,4],[1,2,4],[2,3,4],[3,0,4]];
+  return { verts, tris, color: [70, 150, 235] };
+}
+function floor(y = -1.01, s = 6) {
+  const verts = [[-s,y,-s],[s,y,-s],[s,y,s],[-s,y,s]];
+  return { verts, tris: [[0,1,2],[0,2,3]], color: [90, 150, 100] };
+}
+
+// ---------- Scanline con z-buffer ----------
+function rasterTriangle(p0, p1, p2, r, g, b) {
+  const [a, m, c] = [p0, p1, p2].sort((s, t) => s.y - t.y);   // a arriba, c abajo
+  const y0 = a.y, y1 = m.y, y2 = c.y;
+  if (y2 - y0 < 1e-6) return;
+  const yStart = Math.max(Math.ceil(y0), 0);
+  const yEnd = Math.min(Math.ceil(y2) - 1, H - 1);
+  for (let y = yStart; y <= yEnd; y++) {
+    const t = (y - y0) / (y2 - y0);                            // arista larga a-c
+    let xa = a.x + (c.x - a.x) * t, za = a.z + (c.z - a.z) * t;
+    let xb, zb;
+    if (y < y1) {                                              // mitad superior: a-m
+      const s = (y - y0) / (y1 - y0);
+      xb = a.x + (m.x - a.x) * s; zb = a.z + (m.z - a.z) * s;
+    } else {                                                   // mitad inferior: m-c
+      const s = (y2 - y1) > 1e-6 ? (y - y1) / (y2 - y1) : 0;
+      xb = m.x + (c.x - m.x) * s; zb = m.z + (c.z - m.z) * s;
+    }
+    if (xa > xb) { [xa, xb] = [xb, xa]; [za, zb] = [zb, za]; }
+    const xs = Math.max(Math.ceil(xa), 0);
+    const xe = Math.min(Math.ceil(xb) - 1, W - 1);
+    const dz = xb > xa ? (zb - za) / (xb - xa) : 0;
+    for (let x = xs; x <= xe; x++) {
+      const z = za + dz * (x - xa);
+      const i = y * W + x;
+      if (z < zbuf[i]) {                                       // prueba de profundidad
+        zbuf[i] = z;
+        const o = i * 4;
+        px[o] = r; px[o+1] = g; px[o+2] = b; px[o+3] = 255;
+      }
+    }
+  }
+}
+
+// ---------- Render ----------
+function render(objects, eye, target, lightDir) {
+  for (let i = 0; i < W * H; i++) {
+    px[i*4] = BG[0]; px[i*4+1] = BG[1]; px[i*4+2] = BG[2]; px[i*4+3] = 255;
+  }
+  zbuf.fill(Infinity);
+
+  const P = perspective(60, W / H, NEAR, FAR);
+  const V = lookAt(eye, target);
+  const L = norm(lightDir);                                    // apunta hacia la luz
+  let triCount = 0;
+
+  for (const obj of objects) {
+    const scr = obj.verts.map(v => {
+      const clip = mulVec(P, mulVec(V, v));
+      const w = clip[3];
+      return { w, x: (clip[0]/w + 1) / 2 * W, y: (1 - clip[1]/w) / 2 * H, z: clip[2] / w };
+    });
+    for (const [ia, ib, ic] of obj.tris) {
+      if (scr[ia].w < NEAR || scr[ib].w < NEAR || scr[ic].w < NEAR) continue;  // sin clipping: se descarta
+      let n = norm(cross(sub(obj.verts[ib], obj.verts[ia]), sub(obj.verts[ic], obj.verts[ia])));
+      if (dot(n, sub(eye, obj.verts[ia])) < 0) n = n.map(q => -q);            // normal hacia la cámara
+      const shade = 0.15 + 0.85 * Math.max(0, dot(n, L));                      // plano: un valor por cara
+      rasterTriangle(scr[ia], scr[ib], scr[ic],
+        obj.color[0] * shade, obj.color[1] * shade, obj.color[2] * shade);
+      triCount++;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return triCount;
+}
+
+// ---------- Interfaz ----------
+const $ = id => document.getElementById(id);
+let spinAngle = 0, last = performance.now();
+
+function frame(now) {
+  const dt = (now - last) / 1000; last = now;
+  if ($('spin').checked) spinAngle += dt * 0.8;
+
+  const ang = $('camAng').value * Math.PI / 180, d = +$('camD').value, h = +$('camH').value;
+  const eye = [Math.sin(ang) * d, h, Math.cos(ang) * d];
+  const az = $('lAz').value * Math.PI / 180, el = $('lEl').value * Math.PI / 180;
+  const light = [Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)];
+
+  const scene = [floor(), cube([-1.8, 0, 0], spinAngle), pyramid([2, 0, 0.5], -spinAngle)];
+  const t0 = performance.now();
+  const tris = render(scene, eye, [0, 0, 0], light);
+  $('info').textContent = `${tris} triángulos dibujados en ${(performance.now() - t0).toFixed(1)} ms`;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
