@@ -3,33 +3,93 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rasterización scanline: z-buffer y sombreado plano</title>
+<title>Rasterización: Scanline, Ray Tracing y Oclusión Ambiental</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 20px; background: #14151c; color: #e8e8ee; }
-  main { max-width: 680px; margin: 0 auto; }
+  main { max-width: 720px; margin: 0 auto; }
   h1 { font-size: 1.25rem; margin: 0 0 4px; }
   p { margin: 0 0 14px; color: #a9abb8; font-size: .9rem; }
   canvas { width: 100%; height: auto; display: block; border: 1px solid #2e303c; background: #1a1a26; }
   .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; margin-top: 14px; }
   label { display: flex; flex-direction: column; font-size: .85rem; gap: 4px; }
-  input[type=range] { width: 100%; }
-  #info { margin-top: 12px; font-size: .8rem; color: #a9abb8; }
+  input[type=range], select { width: 100%; padding: 4px; background: #2e303c; color: #e8e8ee; border: 1px solid #444; }
+  
+  /* Estilos para la tabla en pantalla (Parte 4) */
+  .table-container { margin-top: 16px; background: #1a1a26; border: 1px solid #2e303c; padding: 12px; border-radius: 6px; }
+  .table-container h3 { font-size: 0.95rem; margin: 0 0 8px; color: #00ffcc; }
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  th, td { border: 1px solid #2e303c; padding: 6px 10px; text-align: left; }
+  th { background: #222330; color: #fff; }
+  .active-row { background: rgba(0, 255, 204, 0.08); }
 </style>
 </head>
 <body>
 <main>
-  <h1>Escena base y scanline</h1>
-  <p>Rasterización de triángulos con z-buffer y sombreado plano, sin WebGL: cada píxel se calcula en JavaScript.</p>
+  <h1>Escena base y métodos de renderizado</h1>
+  <p>Comparación de Scanline, Ray Tracing y Oclusión Ambiental (AO) con medición de tiempos y tabla en pantalla.</p>
+  <p>Teclas rápidas: 1 = Scanline | 2 = Ray Tracing | 3 = Oclusión Ambiental</p>
+
   <canvas id="c" width="640" height="480"></canvas>
+
+  <!-- TABLA EN PANTALLA PARA EL RINDE Y TIEMPOS (REQUISITO 4) -->
+  <div class="table-container">
+    <h3>📊 Tabla en Pantalla: Comparativa de Rendimiento (performance.now())</h3>
+    <table id="perfTable">
+      <thead>
+        <tr>
+          <th>Técnica</th>
+          <th>Resolución / Carga</th>
+          <th>Tiempo (ms)</th>
+          <th>Estado actual</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr id="tr-scanline" class="active-row">
+          <td>1. Scanline</td>
+          <td>640x480 (Pantalla completa)</td>
+          <td id="time-scanline">0.0 ms</td>
+          <td id="desc-scanline">Activo</td>
+        </tr>
+        <tr id="tr-raytracing">
+          <td>2. Ray Tracing</td>
+          <td id="res-raytracing-txt">240x180</td>
+          <td id="time-raytracing">Esperando...</td>
+          <td id="desc-raytracing">-</td>
+        </tr>
+        <tr id="tr-ao">
+          <td>3. Oclusión Ambiental</td>
+          <td id="res-ao-txt">240x180</td>
+          <td id="time-ao">Esperando...</td>
+          <td id="desc-ao">-</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
   <div class="controls">
+    <label>Técnica de Render:
+      <select id="modeSelect">
+        <option value="scanline">1. Scanline</option>
+        <option value="raytracing">2. Ray Tracing</option>
+        <option value="ao">3. Oclusión Ambiental</option>
+      </select>
+    </label>
+    <label>Resolución RT / AO:
+      <select id="resSelect">
+        <option value="low">Baja (240x180)</option>
+        <option value="mid">Media (320x240)</option>
+        <option value="high">Alta (640x480 - Lenta)</option>
+      </select>
+    </label>
     <label>Cámara: giro <input id="camAng" type="range" min="0" max="360" value="35"></label>
     <label>Cámara: altura <input id="camH" type="range" min="0" max="8" step="0.1" value="3"></label>
     <label>Cámara: distancia <input id="camD" type="range" min="4" max="14" step="0.1" value="7"></label>
     <label>Luz: azimut <input id="lAz" type="range" min="0" max="360" value="40"></label>
     <label>Luz: elevación <input id="lEl" type="range" min="5" max="90" value="55"></label>
     <label><span><input id="spin" type="checkbox" checked> Girar objetos</span></label>
+    <label>Muestras AO: <input id="aoSamples" type="range" min="4" max="24" step="1" value="8"></label>
+    <label>Alcance AO: <input id="aoRadius" type="range" min="0.5" max="5" step="0.1" value="2.5"></label>
   </div>
-  <div id="info"></div>
 </main>
 
 <script>
@@ -39,16 +99,65 @@ const ctx = canvas.getContext('2d');
 const img = ctx.createImageData(W, H);
 const px = img.data;
 const zbuf = new Float32Array(W * H);
+
+let RTW = 240, RTH = 180;
+let rtCanvas = document.createElement('canvas');
+rtCanvas.width = RTW;
+rtCanvas.height = RTH;
+let rtCtx = rtCanvas.getContext('2d');
+let rtImg = rtCtx.createImageData(RTW, RTH);
+let rtPx = rtImg.data;
+
+function updateResolution() {
+  const val = document.getElementById('resSelect').value;
+  if (val === 'low') { RTW = 240; RTH = 180; }
+  else if (val === 'mid') { RTW = 320; RTH = 240; }
+  else if (val === 'high') { RTW = 640; RTH = 480; }
+  rtCanvas.width = RTW;
+  rtCanvas.height = RTH;
+  rtCtx = rtCanvas.getContext('2d');
+  rtImg = rtCtx.createImageData(RTW, RTH);
+  rtPx = rtImg.data;
+
+  const resText = `${RTW}x${RTH}`;
+  document.getElementById('res-raytracing-txt').textContent = resText;
+  document.getElementById('res-ao-txt').textContent = resText;
+}
+document.getElementById('resSelect').addEventListener('change', updateResolution);
+
+let renderMode = 'scanline';
+const modeSelect = document.getElementById('modeSelect');
+modeSelect.addEventListener('change', (e) => { 
+  renderMode = e.target.value; 
+  updateActiveRowUI();
+});
+
+function updateActiveRowUI() {
+  ['scanline', 'raytracing', 'ao'].forEach(m => {
+    const row = document.getElementById(`tr-${m}`);
+    if (m === renderMode) {
+      row.classList.add('active-row');
+      document.getElementById(`desc-${m}`).textContent = 'Activo';
+    } else {
+      row.classList.remove('active-row');
+      document.getElementById(`desc-${m}`).textContent = 'En pausa';
+    }
+  });
+}
+
 const BG = [26, 26, 38];
 const NEAR = 0.1, FAR = 50;
 
-// ---------- Utilidades de vectores ----------
 const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+const add = (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const scale = (a, s) => [a[0]*s, a[1]*s, a[2]*s];
 const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
 const dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-const norm = a => { const l = Math.hypot(...a); return [a[0]/l, a[1]/l, a[2]/l]; };
+const norm = a => {
+  const l = Math.hypot(...a) || 1;
+  return [a[0]/l, a[1]/l, a[2]/l];
+};
 
-// ---------- Cámara ----------
 function lookAt(eye, target, up = [0, 1, 0]) {
   const f = norm(sub(target, eye));
   const r = norm(cross(f, up));
@@ -70,120 +179,250 @@ function perspective(fovDeg, aspect, n, f) {
   ];
 }
 function mulVec(m, v) {
-  const x = v[0], y = v[1], z = v[2];
-  return m.map(r => r[0]*x + r[1]*y + r[2]*z + r[3]);
+  return m.map(r => r[0]*v[0] + r[1]*v[1] + r[2]*v[2] + r[3]);
 }
 
-// ---------- Objetos (devuelven vértices en mundo, triángulos y color) ----------
 function rotY(v, a) {
   const c = Math.cos(a), s = Math.sin(a);
   return [v[0]*c + v[2]*s, v[1], -v[0]*s + v[2]*c];
 }
 function cube(center, angle) {
   const base = [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]];
-  const verts = base.map(v => { const r = rotY(v, angle); return [r[0]+center[0], r[1]+center[1], r[2]+center[2]]; });
+  const verts = base.map(v => {
+    const r = rotY(v, angle);
+    return [r[0]+center[0], r[1]+center[1], r[2]+center[2]];
+  });
   const quads = [[0,1,2,3],[4,5,6,7],[0,1,5,4],[2,3,7,6],[1,2,6,5],[0,3,7,4]];
   const tris = [];
-  for (const [a, b, c, d] of quads) tris.push([a, b, c], [a, c, d]);
-  return { verts, tris, color: [230, 80, 60] };
+  for (const [a,b,c,d] of quads) tris.push([a,b,c], [a,c,d]);
+  return { verts, tris, color: [230,80,60] };
 }
 function pyramid(center, angle) {
   const base = [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1],[0,1,0]];
-  const verts = base.map(v => { const r = rotY(v, angle); return [r[0]+center[0], r[1]+center[1], r[2]+center[2]]; });
+  const verts = base.map(v => {
+    const r = rotY(v, angle);
+    return [r[0]+center[0], r[1]+center[1], r[2]+center[2]];
+  });
   const tris = [[0,1,2],[0,2,3],[0,1,4],[1,2,4],[2,3,4],[3,0,4]];
-  return { verts, tris, color: [70, 150, 235] };
+  return { verts, tris, color: [70,150,235] };
 }
 function floor(y = -1.01, s = 6) {
   const verts = [[-s,y,-s],[s,y,-s],[s,y,s],[-s,y,s]];
-  return { verts, tris: [[0,1,2],[0,2,3]], color: [90, 150, 100] };
+  return { verts, tris: [[0,1,2],[0,2,3]], color: [90,150,100] };
 }
 
-// ---------- Scanline con z-buffer ----------
 function rasterTriangle(p0, p1, p2, r, g, b) {
-  const [a, m, c] = [p0, p1, p2].sort((s, t) => s.y - t.y);   // a arriba, c abajo
-  const y0 = a.y, y1 = m.y, y2 = c.y;
-  if (y2 - y0 < 1e-6) return;
-  const yStart = Math.max(Math.ceil(y0), 0);
-  const yEnd = Math.min(Math.ceil(y2) - 1, H - 1);
-  for (let y = yStart; y <= yEnd; y++) {
-    const t = (y - y0) / (y2 - y0);                            // arista larga a-c
-    let xa = a.x + (c.x - a.x) * t, za = a.z + (c.z - a.z) * t;
-    let xb, zb;
-    if (y < y1) {                                              // mitad superior: a-m
-      const s = (y - y0) / (y1 - y0);
-      xb = a.x + (m.x - a.x) * s; zb = a.z + (m.z - a.z) * s;
-    } else {                                                   // mitad inferior: m-c
-      const s = (y2 - y1) > 1e-6 ? (y - y1) / (y2 - y1) : 0;
-      xb = m.x + (c.x - m.x) * s; zb = m.z + (c.z - m.z) * s;
+  const [a,m,c] = [p0,p1,p2].sort((s,t) => s.y-t.y);
+  const y0=a.y, y1=m.y, y2=c.y;
+  if (y2-y0 < 1e-6) return;
+  const yStart=Math.max(Math.ceil(y0),0);
+  const yEnd=Math.min(Math.ceil(y2)-1,H-1);
+  for (let y=yStart; y<=yEnd; y++) {
+    const t=(y-y0)/(y2-y0);
+    let xa=a.x+(c.x-a.x)*t, za=a.z+(c.z-a.z)*t;
+    let xb,zb;
+    if (y<y1) {
+      const s=(y-y0)/(y1-y0);
+      xb=a.x+(m.x-a.x)*s; zb=a.z+(m.z-a.z)*s;
+    } else {
+      const s=(y2-y1)>1e-6 ? (y-y1)/(y2-y1) : 0;
+      xb=m.x+(c.x-m.x)*s; zb=m.z+(c.z-m.z)*s;
     }
-    if (xa > xb) { [xa, xb] = [xb, xa]; [za, zb] = [zb, za]; }
-    const xs = Math.max(Math.ceil(xa), 0);
-    const xe = Math.min(Math.ceil(xb) - 1, W - 1);
-    const dz = xb > xa ? (zb - za) / (xb - xa) : 0;
-    for (let x = xs; x <= xe; x++) {
-      const z = za + dz * (x - xa);
-      const i = y * W + x;
-      if (z < zbuf[i]) {                                       // prueba de profundidad
-        zbuf[i] = z;
-        const o = i * 4;
-        px[o] = r; px[o+1] = g; px[o+2] = b; px[o+3] = 255;
+    if (xa>xb) { [xa,xb]=[xb,xa]; [za,zb]=[zb,za]; }
+    const xs=Math.max(Math.ceil(xa),0), xe=Math.min(Math.ceil(xb)-1,W-1);
+    const dz=xb>xa ? (zb-za)/(xb-xa) : 0;
+    for (let x=xs; x<=xe; x++) {
+      const z=za+dz*(x-xa), i=y*W+x;
+      if (z<zbuf[i]) {
+        zbuf[i]=z;
+        const o=i*4;
+        px[o]=r; px[o+1]=g; px[o+2]=b; px[o+3]=255;
       }
     }
   }
 }
 
-// ---------- Render ----------
-function render(objects, eye, target, lightDir) {
-  for (let i = 0; i < W * H; i++) {
-    px[i*4] = BG[0]; px[i*4+1] = BG[1]; px[i*4+2] = BG[2]; px[i*4+3] = 255;
+function renderScanline(objects, eye, target, lightDir) {
+  for (let i=0; i<W*H; i++) {
+    px[i*4]=BG[0]; px[i*4+1]=BG[1]; px[i*4+2]=BG[2]; px[i*4+3]=255;
   }
   zbuf.fill(Infinity);
-
-  const P = perspective(60, W / H, NEAR, FAR);
-  const V = lookAt(eye, target);
-  const L = norm(lightDir);                                    // apunta hacia la luz
-  let triCount = 0;
-
+  const P=perspective(60,W/H,NEAR,FAR), V=lookAt(eye,target), L=norm(lightDir);
+  let triCount=0;
   for (const obj of objects) {
-    const scr = obj.verts.map(v => {
-      const clip = mulVec(P, mulVec(V, v));
-      const w = clip[3];
-      return { w, x: (clip[0]/w + 1) / 2 * W, y: (1 - clip[1]/w) / 2 * H, z: clip[2] / w };
+    const scr=obj.verts.map(v => {
+      const clip=mulVec(P,mulVec(V,v)), w=clip[3];
+      return {w,x:(clip[0]/w+1)/2*W,y:(1-clip[1]/w)/2*H,z:clip[2]/w};
     });
-    for (const [ia, ib, ic] of obj.tris) {
-      if (scr[ia].w < NEAR || scr[ib].w < NEAR || scr[ic].w < NEAR) continue;  // sin clipping: se descarta
-      let n = norm(cross(sub(obj.verts[ib], obj.verts[ia]), sub(obj.verts[ic], obj.verts[ia])));
-      if (dot(n, sub(eye, obj.verts[ia])) < 0) n = n.map(q => -q);            // normal hacia la cámara
-      const shade = 0.15 + 0.85 * Math.max(0, dot(n, L));                      // plano: un valor por cara
-      rasterTriangle(scr[ia], scr[ib], scr[ic],
-        obj.color[0] * shade, obj.color[1] * shade, obj.color[2] * shade);
+    for (const [ia,ib,ic] of obj.tris) {
+      if (scr[ia].w<NEAR || scr[ib].w<NEAR || scr[ic].w<NEAR) continue;
+      let n=norm(cross(sub(obj.verts[ib],obj.verts[ia]),sub(obj.verts[ic],obj.verts[ia])));
+      if (dot(n,sub(eye,obj.verts[ia]))<0) n=scale(n,-1);
+      const shade=0.15+0.85*Math.max(0,dot(n,L));
+      rasterTriangle(scr[ia],scr[ib],scr[ic],
+        obj.color[0]*shade,obj.color[1]*shade,obj.color[2]*shade);
       triCount++;
     }
   }
-  ctx.putImageData(img, 0, 0);
+  ctx.putImageData(img,0,0);
   return triCount;
 }
 
-// ---------- Interfaz ----------
-const $ = id => document.getElementById(id);
-let spinAngle = 0, last = performance.now();
+function rayTriangle(origin, dir, a, b, c) {
+  const edge1=sub(b,a), edge2=sub(c,a);
+  const h=cross(dir,edge2), det=dot(edge1,h);
+  if (Math.abs(det)<1e-6) return null;
+  const invDet=1/det, s=sub(origin,a), u=invDet*dot(s,h);
+  if (u<0 || u>1) return null;
+  const q=cross(s,edge1), v=invDet*dot(dir,q);
+  if (v<0 || u+v>1) return null;
+  const t=invDet*dot(edge2,q);
+  return t>0.001 ? t : null;
+}
+function closestHit(origin, dir, objects, maxDistance=Infinity) {
+  let closest=null, minT=maxDistance;
+  for (const obj of objects) {
+    for (const [ia,ib,ic] of obj.tris) {
+      const a=obj.verts[ia], b=obj.verts[ib], c=obj.verts[ic];
+      const t=rayTriangle(origin,dir,a,b,c);
+      if (t!==null && t<minT) {
+        minT=t;
+        const point=add(origin,scale(dir,t));
+        let normal=norm(cross(sub(b,a),sub(c,a)));
+        if (dot(normal,dir)>0) normal=scale(normal,-1);
+        closest={point,normal,color:obj.color};
+      }
+    }
+  }
+  return closest;
+}
+function isInShadow(point, lightDir, objects) {
+  const origin=add(point,scale(lightDir,0.002));
+  return closestHit(origin,lightDir,objects)!==null;
+}
+function traceRay(origin,dir,objects,lightDir) {
+  const hit=closestHit(origin,dir,objects);
+  if (!hit) return BG;
+  const shadow=isInShadow(hit.point,lightDir,objects);
+  const diffuse=shadow ? 0 : Math.max(0,dot(hit.normal,lightDir));
+  const shade=0.15+0.85*diffuse;
+  return hit.color.map(c => Math.min(255,c*shade));
+}
+
+function cameraBasis(eye,target) {
+  const forward=norm(sub(target,eye));
+  const right=norm(cross(forward,[0,1,0]));
+  const up=cross(right,forward);
+  return {forward,right,up};
+}
+function makeCameraRay(x,y,eye,basis,width,height) {
+  const fov=Math.tan(60*Math.PI/360), aspect=width/height;
+  const sx=(2*(x+0.5)/width-1)*aspect*fov;
+  const sy=(1-2*(y+0.5)/height)*fov;
+  return norm(add(basis.forward,add(scale(basis.right,sx),scale(basis.up,sy))));
+}
+
+function renderRayTracing(objects,eye,target,lightDir) {
+  const basis=cameraBasis(eye,target), light=norm(lightDir);
+  for (let y=0; y<RTH; y++) for (let x=0; x<RTW; x++) {
+    const dir=makeCameraRay(x,y,eye,basis,RTW,RTH);
+    const color=traceRay(eye,dir,objects,light);
+    const i=(y*RTW+x)*4;
+    rtPx[i]=color[0]; rtPx[i+1]=color[1]; rtPx[i+2]=color[2]; rtPx[i+3]=255;
+  }
+  rtCtx.putImageData(rtImg,0,0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(rtCanvas,0,0,W,H);
+  return RTW*RTH;
+}
+
+function hemisphereDirection(normal, sampleIndex, sampleCount) {
+  const goldenAngle=Math.PI*(3-Math.sqrt(5));
+  const y=(sampleIndex+0.5)/sampleCount;
+  const radius=Math.sqrt(1-y*y);
+  const phi=sampleIndex*goldenAngle;
+  const local=[Math.cos(phi)*radius,y,Math.sin(phi)*radius];
+
+  const helper=Math.abs(normal[1])<0.999 ? [0,1,0] : [1,0,0];
+  const tangent=norm(cross(helper,normal));
+  const bitangent=cross(normal,tangent);
+  return norm(add(scale(tangent,local[0]),
+    add(scale(normal,local[1]),scale(bitangent,local[2]))));
+}
+function ambientOcclusion(point,normal,objects,sampleCount,radius) {
+  const origin=add(point,scale(normal,0.003));
+  let occluded=0;
+  for (let i=0; i<sampleCount; i++) {
+    const dir=hemisphereDirection(normal,i,sampleCount);
+    if (closestHit(origin,dir,objects,radius)) occluded++;
+  }
+  return 1-occluded/sampleCount;
+}
+function renderAmbientOcclusion(objects,eye,target) {
+  const basis=cameraBasis(eye,target);
+  const samples=+document.getElementById('aoSamples').value;
+  const radius=+document.getElementById('aoRadius').value;
+  let rays=0;
+  for (let y=0; y<RTH; y++) {
+    for (let x=0; x<RTW; x++) {
+      const dir=makeCameraRay(x,y,eye,basis,RTW,RTH);
+      const hit=closestHit(eye,dir,objects);
+      let color=BG;
+      rays++;
+      if (hit) {
+        const ao=ambientOcclusion(hit.point,hit.normal,objects,samples,radius);
+        const shade=0.18+0.82*ao;
+        color=hit.color.map(c => Math.min(255,c*shade));
+        rays+=samples;
+      }
+      const i=(y*RTW+x)*4;
+      rtPx[i]=color[0]; rtPx[i+1]=color[1]; rtPx[i+2]=color[2]; rtPx[i+3]=255;
+    }
+  }
+  rtCtx.putImageData(rtImg,0,0);
+  ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(rtCanvas,0,0,W,H);
+  return {rays,samples,radius};
+}
+
+let spinAngle=0, last=performance.now();
+window.addEventListener('keydown',event=>{
+  if (event.key==='1') { renderMode='scanline'; modeSelect.value='scanline'; updateActiveRowUI(); }
+  if (event.key==='2') { renderMode='raytracing'; modeSelect.value='raytracing'; updateActiveRowUI(); }
+  if (event.key==='3') { renderMode='ao'; modeSelect.value='ao'; updateActiveRowUI(); }
+});
 
 function frame(now) {
-  const dt = (now - last) / 1000; last = now;
-  if ($('spin').checked) spinAngle += dt * 0.8;
+  const dt=(now-last)/1000; last=now;
+  if (document.getElementById('spin').checked) spinAngle+=dt*0.8;
+  const ang=document.getElementById('camAng').value*Math.PI/180;
+  const d=+document.getElementById('camD').value, h=+document.getElementById('camH').value;
+  const eye=[Math.sin(ang)*d,h,Math.cos(ang)*d];
+  const az=document.getElementById('lAz').value*Math.PI/180, el=document.getElementById('lEl').value*Math.PI/180;
+  const light=[Math.cos(el)*Math.sin(az),Math.sin(el),Math.cos(el)*Math.cos(az)];
+  const scene=[floor(),cube([-1.8,0,0],spinAngle),pyramid([2,0,0.5],-spinAngle)];
+  
+  // Medición con performance.now()
+  const t0=performance.now();
 
-  const ang = $('camAng').value * Math.PI / 180, d = +$('camD').value, h = +$('camH').value;
-  const eye = [Math.sin(ang) * d, h, Math.cos(ang) * d];
-  const az = $('lAz').value * Math.PI / 180, el = $('lEl').value * Math.PI / 180;
-  const light = [Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)];
-
-  const scene = [floor(), cube([-1.8, 0, 0], spinAngle), pyramid([2, 0, 0.5], -spinAngle)];
-  const t0 = performance.now();
-  const tris = render(scene, eye, [0, 0, 0], light);
-  $('info').textContent = `${tris} triángulos dibujados en ${(performance.now() - t0).toFixed(1)} ms`;
+  if (renderMode==='scanline') {
+    renderScanline(scene,eye,[0,0,0],light);
+    const duration = (performance.now()-t0).toFixed(1);
+    document.getElementById('time-scanline').textContent = `${duration} ms`;
+  } else if (renderMode==='raytracing') {
+    renderRayTracing(scene,eye,[0,0,0],light);
+    const duration = (performance.now()-t0).toFixed(1);
+    document.getElementById('time-raytracing').textContent = `${duration} ms`;
+  } else {
+    renderAmbientOcclusion(scene,eye,[0,0,0]);
+    const duration = (performance.now()-t0).toFixed(1);
+    document.getElementById('time-ao').textContent = `${duration} ms`;
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
+updateActiveRowUI();
+updateResolution();
 </script>
 </body>
 </html>
