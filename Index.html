@@ -20,6 +20,8 @@
 <main>
   <h1>Escena base y scanline</h1>
   <p>Rasterización de triángulos con z-buffer y sombreado plano, sin WebGL: cada píxel se calcula en JavaScript.</p>
+  <p>Teclas: 1 = Scanline | 2 = Ray Tracing</p>
+
   <canvas id="c" width="640" height="480"></canvas>
   <div class="controls">
     <label>Cámara: giro <input id="camAng" type="range" min="0" max="360" value="35"></label>
@@ -39,6 +41,16 @@ const ctx = canvas.getContext('2d');
 const img = ctx.createImageData(W, H);
 const px = img.data;
 const zbuf = new Float32Array(W * H);
+const RTW = 320, RTH = 240;
+const rtCanvas = document.createElement('canvas');
+rtCanvas.width = RTW;
+rtCanvas.height = RTH;
+
+const rtCtx = rtCanvas.getContext('2d');
+const rtImg = rtCtx.createImageData(RTW, RTH);
+const rtPx = rtImg.data;
+
+let renderMode = 'scanline';
 const BG = [26, 26, 38];
 const NEAR = 0.1, FAR = 50;
 
@@ -133,7 +145,147 @@ function rasterTriangle(p0, p1, p2, r, g, b) {
 }
 
 // ---------- Render ----------
-function render(objects, eye, target, lightDir) {
+function renderScanline(objects, eye, target, lightDir) {
+// Calcula la intersección entre un rayo y un triángulo
+function rayTriangle(origin, dir, a, b, c) {
+  const edge1 = sub(b, a);
+  const edge2 = sub(c, a);
+
+  const h = cross(dir, edge2);
+  const det = dot(edge1, h);
+
+  if (Math.abs(det) < 0.000001) return null;
+
+  const invDet = 1 / det;
+  const s = sub(origin, a);
+  const u = invDet * dot(s, h);
+
+  if (u < 0 || u > 1) return null;
+
+  const q = cross(s, edge1);
+  const v = invDet * dot(dir, q);
+
+  if (v < 0 || u + v > 1) return null;
+
+  const t = invDet * dot(edge2, q);
+
+  if (t < 0.001) return null;
+
+  return t;
+}
+
+// Busca el objeto más cercano que toca el rayo
+function closestHit(origin, dir, objects) {
+  let closest = null;
+  let minT = Infinity;
+
+  for (const obj of objects) {
+    for (const [ia, ib, ic] of obj.tris) {
+      const a = obj.verts[ia];
+      const b = obj.verts[ib];
+      const c = obj.verts[ic];
+
+      const t = rayTriangle(origin, dir, a, b, c);
+
+      if (t !== null && t < minT) {
+        minT = t;
+
+        const point = [
+          origin[0] + dir[0] * t,
+          origin[1] + dir[1] * t,
+          origin[2] + dir[2] * t
+        ];
+
+        let normal = norm(cross(sub(b, a), sub(c, a)));
+
+        // Orienta la normal hacia el origen del rayo
+        if (dot(normal, dir) > 0) {
+          normal = normal.map(v => -v);
+        }
+
+        closest = {
+          point,
+          normal,
+          color: obj.color
+        };
+      }
+    }
+  }
+
+  return closest;
+}
+
+// Comprueba si un punto está en sombra
+function isInShadow(point, lightDir, objects) {
+  const origin = [
+    point[0] + lightDir[0] * 0.002,
+    point[1] + lightDir[1] * 0.002,
+    point[2] + lightDir[2] * 0.002
+  ];
+
+  return closestHit(origin, lightDir, objects) !== null;
+}
+
+// Calcula el color de un rayo
+function traceRay(origin, dir, objects, lightDir) {
+  const hit = closestHit(origin, dir, objects);
+
+  if (!hit) return BG;
+
+  const shadow = isInShadow(hit.point, lightDir, objects);
+
+  const diffuse = shadow
+    ? 0
+    : Math.max(0, dot(hit.normal, lightDir));
+
+  const shade = 0.15 + 0.85 * diffuse;
+
+  return [
+    Math.min(255, hit.color[0] * shade),
+    Math.min(255, hit.color[1] * shade),
+    Math.min(255, hit.color[2] * shade)
+  ];
+}
+
+// Renderizado mediante Ray Tracing
+function renderRayTracing(objects, eye, target, lightDir) {
+  const forward = norm(sub(target, eye));
+  const right = norm(cross(forward, [0, 1, 0]));
+  const up = cross(right, forward);
+
+  const light = norm(lightDir);
+  const fov = Math.tan(60 * Math.PI / 360);
+  const aspect = RTW / RTH;
+
+  for (let y = 0; y < RTH; y++) {
+    for (let x = 0; x < RTW; x++) {
+      const sx = (2 * (x + 0.5) / RTW - 1) * aspect * fov;
+      const sy = (1 - 2 * (y + 0.5) / RTH) * fov;
+
+      const dir = norm([
+        forward[0] + right[0] * sx + up[0] * sy,
+        forward[1] + right[1] * sx + up[1] * sy,
+        forward[2] + right[2] * sx + up[2] * sy
+      ]);
+
+      const color = traceRay(eye, dir, objects, light);
+
+      const i = (y * RTW + x) * 4;
+
+      rtPx[i] = color[0];
+      rtPx[i + 1] = color[1];
+      rtPx[i + 2] = color[2];
+      rtPx[i + 3] = 255;
+    }
+  }
+
+  rtCtx.putImageData(rtImg, 0, 0);
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(rtCanvas, 0, 0, W, H);
+
+  return RTW * RTH;
+}
   for (let i = 0; i < W * H; i++) {
     px[i*4] = BG[0]; px[i*4+1] = BG[1]; px[i*4+2] = BG[2]; px[i*4+3] = 255;
   }
@@ -167,6 +319,15 @@ function render(objects, eye, target, lightDir) {
 // ---------- Interfaz ----------
 const $ = id => document.getElementById(id);
 let spinAngle = 0, last = performance.now();
+window.addEventListener('keydown', event => {
+  if (event.key === '1') {
+    renderMode = 'scanline';
+  }
+
+  if (event.key === '2') {
+    renderMode = 'raytracing';
+  }
+});
 
 function frame(now) {
   const dt = (now - last) / 1000; last = now;
@@ -179,8 +340,17 @@ function frame(now) {
 
   const scene = [floor(), cube([-1.8, 0, 0], spinAngle), pyramid([2, 0, 0.5], -spinAngle)];
   const t0 = performance.now();
-  const tris = render(scene, eye, [0, 0, 0], light);
-  $('info').textContent = `${tris} triángulos dibujados en ${(performance.now() - t0).toFixed(1)} ms`;
+ let result;
+
+if (renderMode === 'scanline') {
+  result = renderScanline(scene, eye, [0, 0, 0], light);
+  $('info').textContent =
+    `Método: Scanline | ${result} triángulos dibujados | ${(performance.now() - t0).toFixed(1)} ms`;
+} else {
+  result = renderRayTracing(scene, eye, [0, 0, 0], light);
+  $('info').textContent =
+    `Método: Ray Tracing | ${result} rayos calculados | ${(performance.now() - t0).toFixed(1)} ms`;
+}
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
