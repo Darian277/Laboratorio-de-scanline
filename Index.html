@@ -13,8 +13,7 @@
   .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; margin-top: 14px; }
   label { display: flex; flex-direction: column; font-size: .85rem; gap: 4px; }
   input[type=range], select { width: 100%; padding: 4px; background: #2e303c; color: #e8e8ee; border: 1px solid #444; }
-  
-  /* Estilos para la tabla en pantalla (Parte 4) */
+
   .table-container { margin-top: 16px; background: #1a1a26; border: 1px solid #2e303c; padding: 12px; border-radius: 6px; }
   .table-container h3 { font-size: 0.95rem; margin: 0 0 8px; color: #00ffcc; }
   table { width: 100%; border-collapse: collapse; font-size: .82rem; }
@@ -25,21 +24,14 @@
 </head>
 <body>
 <main>
-<<<<<<< HEAD
-  <h1>Escena base y scanline</h1>
-  <p>Rasterización de triángulos con z-buffer y sombreado plano, sin WebGL: cada píxel se calcula en JavaScript.</p>
-  <p>Teclas: 1 = Scanline | 2 = Ray Tracing</p>
-=======
   <h1>Escena base y métodos de renderizado</h1>
   <p>Comparación de Scanline, Ray Tracing y Oclusión Ambiental (AO) con medición de tiempos y tabla en pantalla.</p>
   <p>Teclas rápidas: 1 = Scanline | 2 = Ray Tracing | 3 = Oclusión Ambiental</p>
->>>>>>> feature/medicionycomparacion-axel
 
   <canvas id="c" width="640" height="480"></canvas>
 
-  <!-- TABLA EN PANTALLA PARA EL RINDE Y TIEMPOS (REQUISITO 4) -->
   <div class="table-container">
-    <h3>📊 Tabla en Pantalla: Comparativa de Rendimiento (performance.now())</h3>
+    <h3>Tabla en Pantalla: Comparativa de Rendimiento (performance.now())</h3>
     <table id="perfTable">
       <thead>
         <tr>
@@ -105,18 +97,6 @@ const ctx = canvas.getContext('2d');
 const img = ctx.createImageData(W, H);
 const px = img.data;
 const zbuf = new Float32Array(W * H);
- HEAD
-const RTW = 320, RTH = 240;
-const rtCanvas = document.createElement('canvas');
-rtCanvas.width = RTW;
-rtCanvas.height = RTH;
-
-const rtCtx = rtCanvas.getContext('2d');
-const rtImg = rtCtx.createImageData(RTW, RTH);
-const rtPx = rtImg.data;
-
-let renderMode = 'scanline';
-
 
 let RTW = 240, RTH = 180;
 let rtCanvas = document.createElement('canvas');
@@ -126,8 +106,10 @@ let rtCtx = rtCanvas.getContext('2d');
 let rtImg = rtCtx.createImageData(RTW, RTH);
 let rtPx = rtImg.data;
 
+const $ = id => document.getElementById(id);
+
 function updateResolution() {
-  const val = document.getElementById('resSelect').value;
+  const val = $('resSelect').value;
   if (val === 'low') { RTW = 240; RTH = 180; }
   else if (val === 'mid') { RTW = 320; RTH = 240; }
   else if (val === 'high') { RTW = 640; RTH = 480; }
@@ -138,31 +120,31 @@ function updateResolution() {
   rtPx = rtImg.data;
 
   const resText = `${RTW}x${RTH}`;
-  document.getElementById('res-raytracing-txt').textContent = resText;
-  document.getElementById('res-ao-txt').textContent = resText;
+  $('res-raytracing-txt').textContent = resText;
+  $('res-ao-txt').textContent = resText;
 }
-document.getElementById('resSelect').addEventListener('change', updateResolution);
+$('resSelect').addEventListener('change', updateResolution);
 
 let renderMode = 'scanline';
-const modeSelect = document.getElementById('modeSelect');
-modeSelect.addEventListener('change', (e) => { 
-  renderMode = e.target.value; 
+const modeSelect = $('modeSelect');
+modeSelect.addEventListener('change', (e) => {
+  renderMode = e.target.value;
   updateActiveRowUI();
 });
 
 function updateActiveRowUI() {
   ['scanline', 'raytracing', 'ao'].forEach(m => {
-    const row = document.getElementById(`tr-${m}`);
+    const row = $(`tr-${m}`);
     if (m === renderMode) {
       row.classList.add('active-row');
-      document.getElementById(`desc-${m}`).textContent = 'Activo';
+      $(`desc-${m}`).textContent = 'Activo';
     } else {
       row.classList.remove('active-row');
-      document.getElementById(`desc-${m}`).textContent = 'En pausa';
+      $(`desc-${m}`).textContent = 'En pausa';
     }
   });
 }
- feature/medicionycomparacion-axel
+
 const BG = [26, 26, 38];
 const NEAR = 0.1, FAR = 50;
 
@@ -260,156 +242,9 @@ function rasterTriangle(p0, p1, p2, r, g, b) {
   }
 }
 
-<<<<<<< HEAD
-// ---------- Render ----------
-function renderScanline(objects, eye, target, lightDir) {
-// Calcula la intersección entre un rayo y un triángulo
-function rayTriangle(origin, dir, a, b, c) {
-  const edge1 = sub(b, a);
-  const edge2 = sub(c, a);
-
-  const h = cross(dir, edge2);
-  const det = dot(edge1, h);
-
-  if (Math.abs(det) < 0.000001) return null;
-
-  const invDet = 1 / det;
-  const s = sub(origin, a);
-  const u = invDet * dot(s, h);
-
-  if (u < 0 || u > 1) return null;
-
-  const q = cross(s, edge1);
-  const v = invDet * dot(dir, q);
-
-  if (v < 0 || u + v > 1) return null;
-
-  const t = invDet * dot(edge2, q);
-
-  if (t < 0.001) return null;
-
-  return t;
-}
-
-// Busca el objeto más cercano que toca el rayo
-function closestHit(origin, dir, objects) {
-  let closest = null;
-  let minT = Infinity;
-
-  for (const obj of objects) {
-    for (const [ia, ib, ic] of obj.tris) {
-      const a = obj.verts[ia];
-      const b = obj.verts[ib];
-      const c = obj.verts[ic];
-
-      const t = rayTriangle(origin, dir, a, b, c);
-
-      if (t !== null && t < minT) {
-        minT = t;
-
-        const point = [
-          origin[0] + dir[0] * t,
-          origin[1] + dir[1] * t,
-          origin[2] + dir[2] * t
-        ];
-
-        let normal = norm(cross(sub(b, a), sub(c, a)));
-
-        // Orienta la normal hacia el origen del rayo
-        if (dot(normal, dir) > 0) {
-          normal = normal.map(v => -v);
-        }
-
-        closest = {
-          point,
-          normal,
-          color: obj.color
-        };
-      }
-    }
-  }
-
-  return closest;
-}
-
-// Comprueba si un punto está en sombra
-function isInShadow(point, lightDir, objects) {
-  const origin = [
-    point[0] + lightDir[0] * 0.002,
-    point[1] + lightDir[1] * 0.002,
-    point[2] + lightDir[2] * 0.002
-  ];
-
-  return closestHit(origin, lightDir, objects) !== null;
-}
-
-// Calcula el color de un rayo
-function traceRay(origin, dir, objects, lightDir) {
-  const hit = closestHit(origin, dir, objects);
-
-  if (!hit) return BG;
-
-  const shadow = isInShadow(hit.point, lightDir, objects);
-
-  const diffuse = shadow
-    ? 0
-    : Math.max(0, dot(hit.normal, lightDir));
-
-  const shade = 0.15 + 0.85 * diffuse;
-
-  return [
-    Math.min(255, hit.color[0] * shade),
-    Math.min(255, hit.color[1] * shade),
-    Math.min(255, hit.color[2] * shade)
-  ];
-}
-
-// Renderizado mediante Ray Tracing
-function renderRayTracing(objects, eye, target, lightDir) {
-  const forward = norm(sub(target, eye));
-  const right = norm(cross(forward, [0, 1, 0]));
-  const up = cross(right, forward);
-
-  const light = norm(lightDir);
-  const fov = Math.tan(60 * Math.PI / 360);
-  const aspect = RTW / RTH;
-
-  for (let y = 0; y < RTH; y++) {
-    for (let x = 0; x < RTW; x++) {
-      const sx = (2 * (x + 0.5) / RTW - 1) * aspect * fov;
-      const sy = (1 - 2 * (y + 0.5) / RTH) * fov;
-
-      const dir = norm([
-        forward[0] + right[0] * sx + up[0] * sy,
-        forward[1] + right[1] * sx + up[1] * sy,
-        forward[2] + right[2] * sx + up[2] * sy
-      ]);
-
-      const color = traceRay(eye, dir, objects, light);
-
-      const i = (y * RTW + x) * 4;
-
-      rtPx[i] = color[0];
-      rtPx[i + 1] = color[1];
-      rtPx[i + 2] = color[2];
-      rtPx[i + 3] = 255;
-    }
-  }
-
-  rtCtx.putImageData(rtImg, 0, 0);
-
-  ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(rtCanvas, 0, 0, W, H);
-
-  return RTW * RTH;
-}
-  for (let i = 0; i < W * H; i++) {
-    px[i*4] = BG[0]; px[i*4+1] = BG[1]; px[i*4+2] = BG[2]; px[i*4+3] = 255;
-=======
 function renderScanline(objects, eye, target, lightDir) {
   for (let i=0; i<W*H; i++) {
     px[i*4]=BG[0]; px[i*4+1]=BG[1]; px[i*4+2]=BG[2]; px[i*4+3]=255;
->>>>>>> feature/medicionycomparacion-axel
   }
   zbuf.fill(Infinity);
   const P=perspective(60,W/H,NEAR,FAR), V=lookAt(eye,target), L=norm(lightDir);
@@ -433,19 +268,6 @@ function renderScanline(objects, eye, target, lightDir) {
   return triCount;
 }
 
-<<<<<<< HEAD
-// ---------- Interfaz ----------
-const $ = id => document.getElementById(id);
-let spinAngle = 0, last = performance.now();
-window.addEventListener('keydown', event => {
-  if (event.key === '1') {
-    renderMode = 'scanline';
-  }
-
-  if (event.key === '2') {
-    renderMode = 'raytracing';
-  }
-=======
 function rayTriangle(origin, dir, a, b, c) {
   const edge1=sub(b,a), edge2=sub(c,a);
   const h=cross(dir,edge2), det=dot(edge1,h);
@@ -538,8 +360,8 @@ function ambientOcclusion(point,normal,objects,sampleCount,radius) {
 }
 function renderAmbientOcclusion(objects,eye,target) {
   const basis=cameraBasis(eye,target);
-  const samples=+document.getElementById('aoSamples').value;
-  const radius=+document.getElementById('aoRadius').value;
+  const samples=+$('aoSamples').value;
+  const radius=+$('aoRadius').value;
   let rays=0;
   for (let y=0; y<RTH; y++) {
     for (let x=0; x<RTW; x++) {
@@ -564,60 +386,37 @@ function renderAmbientOcclusion(objects,eye,target) {
 }
 
 let spinAngle=0, last=performance.now();
-window.addEventListener('keydown',event=>{
+window.addEventListener('keydown', event => {
   if (event.key==='1') { renderMode='scanline'; modeSelect.value='scanline'; updateActiveRowUI(); }
   if (event.key==='2') { renderMode='raytracing'; modeSelect.value='raytracing'; updateActiveRowUI(); }
   if (event.key==='3') { renderMode='ao'; modeSelect.value='ao'; updateActiveRowUI(); }
->>>>>>> feature/medicionycomparacion-axel
 });
 
 function frame(now) {
   const dt=(now-last)/1000; last=now;
-  if (document.getElementById('spin').checked) spinAngle+=dt*0.8;
-  const ang=document.getElementById('camAng').value*Math.PI/180;
-  const d=+document.getElementById('camD').value, h=+document.getElementById('camH').value;
+  if ($('spin').checked) spinAngle+=dt*0.8;
+  const ang=$('camAng').value*Math.PI/180;
+  const d=+$('camD').value, h=+$('camH').value;
   const eye=[Math.sin(ang)*d,h,Math.cos(ang)*d];
-  const az=document.getElementById('lAz').value*Math.PI/180, el=document.getElementById('lEl').value*Math.PI/180;
+  const az=$('lAz').value*Math.PI/180, el=$('lEl').value*Math.PI/180;
   const light=[Math.cos(el)*Math.sin(az),Math.sin(el),Math.cos(el)*Math.cos(az)];
   const scene=[floor(),cube([-1.8,0,0],spinAngle),pyramid([2,0,0.5],-spinAngle)];
-  
-  // Medición con performance.now()
+
   const t0=performance.now();
 
-<<<<<<< HEAD
-  const ang = $('camAng').value * Math.PI / 180, d = +$('camD').value, h = +$('camH').value;
-  const eye = [Math.sin(ang) * d, h, Math.cos(ang) * d];
-  const az = $('lAz').value * Math.PI / 180, el = $('lEl').value * Math.PI / 180;
-  const light = [Math.cos(el) * Math.sin(az), Math.sin(el), Math.cos(el) * Math.cos(az)];
-
-  const scene = [floor(), cube([-1.8, 0, 0], spinAngle), pyramid([2, 0, 0.5], -spinAngle)];
-  const t0 = performance.now();
- let result;
-
-if (renderMode === 'scanline') {
-  result = renderScanline(scene, eye, [0, 0, 0], light);
-  $('info').textContent =
-    `Método: Scanline | ${result} triángulos dibujados | ${(performance.now() - t0).toFixed(1)} ms`;
-} else {
-  result = renderRayTracing(scene, eye, [0, 0, 0], light);
-  $('info').textContent =
-    `Método: Ray Tracing | ${result} rayos calculados | ${(performance.now() - t0).toFixed(1)} ms`;
-}
-=======
   if (renderMode==='scanline') {
     renderScanline(scene,eye,[0,0,0],light);
     const duration = (performance.now()-t0).toFixed(1);
-    document.getElementById('time-scanline').textContent = `${duration} ms`;
+    $('time-scanline').textContent = `${duration} ms`;
   } else if (renderMode==='raytracing') {
     renderRayTracing(scene,eye,[0,0,0],light);
     const duration = (performance.now()-t0).toFixed(1);
-    document.getElementById('time-raytracing').textContent = `${duration} ms`;
+    $('time-raytracing').textContent = `${duration} ms`;
   } else {
     renderAmbientOcclusion(scene,eye,[0,0,0]);
     const duration = (performance.now()-t0).toFixed(1);
-    document.getElementById('time-ao').textContent = `${duration} ms`;
+    $('time-ao').textContent = `${duration} ms`;
   }
->>>>>>> feature/medicionycomparacion-axel
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
