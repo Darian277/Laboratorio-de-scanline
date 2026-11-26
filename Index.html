@@ -79,6 +79,13 @@
         <option value="high">Alta (640x480 - Lenta)</option>
       </select>
     </label>
+    <label>Anti-aliasing (SSAA):
+      <select id="aaSelect">
+        <option value="1">Desactivado (1x)</option>
+        <option value="2">SSAA 2x2 (4 submuestras)</option>
+        <option value="3">SSAA 3x3 (9 submuestras)</option>
+      </select>
+    </label>
     <label>Cámara: giro <input id="camAng" type="range" min="0" max="360" value="35"></label>
     <label>Cámara: altura <input id="camH" type="range" min="0" max="8" step="0.1" value="3"></label>
     <label>Cámara: distancia <input id="camD" type="range" min="4" max="14" step="0.1" value="7"></label>
@@ -315,25 +322,50 @@ function cameraBasis(eye,target) {
   const up=cross(right,forward);
   return {forward,right,up};
 }
-function makeCameraRay(x,y,eye,basis,width,height) {
+function makeCameraRay(x,y,eye,basis,width,height,ox=0.5,oy=0.5) {
   const fov=Math.tan(60*Math.PI/360), aspect=width/height;
-  const sx=(2*(x+0.5)/width-1)*aspect*fov;
-  const sy=(1-2*(y+0.5)/height)*fov;
+  const sx=(2*(x+ox)/width-1)*aspect*fov;
+  const sy=(1-2*(y+oy)/height)*fov;
   return norm(add(basis.forward,add(scale(basis.right,sx),scale(basis.up,sy))));
+}
+function getSubpixelOffsets(aaGrid) {
+  if (aaGrid <= 1) return [[0.5, 0.5]];
+  const offsets = [];
+  for (let sy = 0; sy < aaGrid; sy++) {
+    for (let sx = 0; sx < aaGrid; sx++) {
+      offsets.push([(sx + 0.5) / aaGrid, (sy + 0.5) / aaGrid]);
+    }
+  }
+  return offsets;
 }
 
 function renderRayTracing(objects,eye,target,lightDir) {
   const basis=cameraBasis(eye,target), light=norm(lightDir);
-  for (let y=0; y<RTH; y++) for (let x=0; x<RTW; x++) {
-    const dir=makeCameraRay(x,y,eye,basis,RTW,RTH);
-    const color=traceRay(eye,dir,objects,light);
-    const i=(y*RTW+x)*4;
-    rtPx[i]=color[0]; rtPx[i+1]=color[1]; rtPx[i+2]=color[2]; rtPx[i+3]=255;
+  const aaGrid = parseInt($('aaSelect').value, 10) || 1;
+  const offsets = getSubpixelOffsets(aaGrid);
+  const invSamples = 1 / offsets.length;
+
+  for (let y=0; y<RTH; y++) {
+    for (let x=0; x<RTW; x++) {
+      let r = 0, g = 0, b = 0;
+      for (const [ox, oy] of offsets) {
+        const dir = makeCameraRay(x, y, eye, basis, RTW, RTH, ox, oy);
+        const color = traceRay(eye, dir, objects, light);
+        r += color[0];
+        g += color[1];
+        b += color[2];
+      }
+      const i=(y*RTW+x)*4;
+      rtPx[i]=r*invSamples;
+      rtPx[i+1]=g*invSamples;
+      rtPx[i+2]=b*invSamples;
+      rtPx[i+3]=255;
+    }
   }
   rtCtx.putImageData(rtImg,0,0);
   ctx.imageSmoothingEnabled=false;
   ctx.drawImage(rtCanvas,0,0,W,H);
-  return RTW*RTH;
+  return RTW*RTH*offsets.length;
 }
 
 function hemisphereDirection(normal, sampleIndex, sampleCount) {
@@ -362,21 +394,34 @@ function renderAmbientOcclusion(objects,eye,target) {
   const basis=cameraBasis(eye,target);
   const samples=+$('aoSamples').value;
   const radius=+$('aoRadius').value;
+  const aaGrid = parseInt($('aaSelect').value, 10) || 1;
+  const offsets = getSubpixelOffsets(aaGrid);
+  const invSamples = 1 / offsets.length;
   let rays=0;
+
   for (let y=0; y<RTH; y++) {
     for (let x=0; x<RTW; x++) {
-      const dir=makeCameraRay(x,y,eye,basis,RTW,RTH);
-      const hit=closestHit(eye,dir,objects);
-      let color=BG;
-      rays++;
-      if (hit) {
-        const ao=ambientOcclusion(hit.point,hit.normal,objects,samples,radius);
-        const shade=0.18+0.82*ao;
-        color=hit.color.map(c => Math.min(255,c*shade));
-        rays+=samples;
+      let r = 0, g = 0, b = 0;
+      for (const [ox, oy] of offsets) {
+        const dir = makeCameraRay(x, y, eye, basis, RTW, RTH, ox, oy);
+        const hit = closestHit(eye, dir, objects);
+        let sampleColor = BG;
+        rays++;
+        if (hit) {
+          const ao = ambientOcclusion(hit.point, hit.normal, objects, samples, radius);
+          const shade = 0.18 + 0.82 * ao;
+          sampleColor = hit.color.map(c => Math.min(255, c * shade));
+          rays += samples;
+        }
+        r += sampleColor[0];
+        g += sampleColor[1];
+        b += sampleColor[2];
       }
       const i=(y*RTW+x)*4;
-      rtPx[i]=color[0]; rtPx[i+1]=color[1]; rtPx[i+2]=color[2]; rtPx[i+3]=255;
+      rtPx[i]=r*invSamples;
+      rtPx[i+1]=g*invSamples;
+      rtPx[i+2]=b*invSamples;
+      rtPx[i+3]=255;
     }
   }
   rtCtx.putImageData(rtImg,0,0);
